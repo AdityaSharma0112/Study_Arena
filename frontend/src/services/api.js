@@ -55,18 +55,94 @@ export const ICE_SERVERS = {
   iceCandidatePoolSize: 10,
 };
 
-// Common fetch headers (including ngrok splash screen bypass)
-const DEFAULT_HEADERS = {
-  'Content-Type': 'application/json',
-  'ngrok-skip-browser-warning': 'true', // Bypasses ngrok free tier browser splash warning
+// Auth Token Helper
+export const getAuthToken = () => {
+  if (!isBrowser) return null;
+  return localStorage.getItem('arena_auth_token');
+};
+
+export const setAuthToken = (token) => {
+  if (!isBrowser) return;
+  if (token) {
+    localStorage.setItem('arena_auth_token', token);
+  } else {
+    localStorage.removeItem('arena_auth_token');
+  }
+};
+
+// Common fetch headers (including ngrok splash screen bypass & auth token)
+export const getHeaders = (extraHeaders = {}) => {
+  const headers = {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true', // Bypasses ngrok free tier browser splash warning
+    ...extraHeaders,
+  };
+
+  const token = getAuthToken();
+  if (token) {
+    headers['Authorization'] = `Token ${token}`;
+  }
+
+  return headers;
 };
 
 export const apiService = {
+  // Auth API
+  async login(username, password) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login/`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Invalid credentials or login failed.');
+      }
+      return data;
+    } catch (error) {
+      console.error('API Error login:', error);
+      throw error;
+    }
+  },
+
+  async logout() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/logout/`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('API Error logout:', error);
+    }
+  },
+
+  async getCurrentUser() {
+    try {
+      const token = getAuthToken();
+      if (!token) return null;
+
+      const response = await fetch(`${API_BASE_URL}/api/auth/me/`, {
+        headers: getHeaders(),
+      });
+      if (!response.ok) {
+        setAuthToken(null);
+        return null;
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('API Error getCurrentUser:', error);
+      return null;
+    }
+  },
+
+  // Rooms API
   async createRoom(title = 'Arena Discussion Room', hostName = 'Host', maxParticipants = 6) {
     try {
       const response = await fetch(`${API_BASE_URL}/api/rooms/create/`, {
         method: 'POST',
-        headers: DEFAULT_HEADERS,
+        headers: getHeaders(),
         body: JSON.stringify({
           title,
           host_name: hostName,
@@ -86,7 +162,7 @@ export const apiService = {
   async verifyRoom(code) {
     try {
       const response = await fetch(`${API_BASE_URL}/api/rooms/${code}/verify/`, {
-        headers: DEFAULT_HEADERS,
+        headers: getHeaders(),
       });
       return await response.json();
     } catch (error) {
@@ -98,13 +174,13 @@ export const apiService = {
   async getActiveRooms() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/rooms/active/`, {
-        headers: DEFAULT_HEADERS,
+        headers: getHeaders(),
       });
-      if (!response.ok) return [];
+      if (!response.ok) return { isAuthenticated: false, created_rooms: [], joined_rooms: [], all_rooms: [] };
       return await response.json();
     } catch (error) {
       console.error('API Error getActiveRooms:', error);
-      return [];
+      return { isAuthenticated: false, created_rooms: [], joined_rooms: [], all_rooms: [] };
     }
   },
 
@@ -112,7 +188,7 @@ export const apiService = {
     try {
       const response = await fetch(`${API_BASE_URL}/api/rooms/${code}/delete/`, {
         method: 'DELETE',
-        headers: DEFAULT_HEADERS,
+        headers: getHeaders(),
       });
       return await response.json();
     } catch (error) {
@@ -125,7 +201,7 @@ export const apiService = {
     try {
       const response = await fetch(`${API_BASE_URL}/api/rooms/clear-all/`, {
         method: 'POST',
-        headers: DEFAULT_HEADERS,
+        headers: getHeaders(),
       });
       return await response.json();
     } catch (error) {
@@ -141,7 +217,7 @@ export const apiService = {
       if (query && query.trim()) params.append('q', query.trim());
 
       const url = `${API_BASE_URL}/api/rooms/questions/?${params.toString()}`;
-      const response = await fetch(url, { headers: DEFAULT_HEADERS });
+      const response = await fetch(url, { headers: getHeaders() });
       if (!response.ok) return { topics: ['All'], questions: [], total: 0 };
       return await response.json();
     } catch (error) {
@@ -154,4 +230,3 @@ export const apiService = {
     return `${WS_BASE_URL}/ws/rooms/${roomCode}/`;
   },
 };
-

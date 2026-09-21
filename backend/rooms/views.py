@@ -65,3 +65,19 @@ class ClearAllRoomsView(APIView):
     def post(self, request):
         count, _ = Room.objects.all().delete()
         return Response({'success': True, 'deleted_count': count}, status=status.HTTP_200_OK)
+
+class QuestionListView(APIView):
+    def get(self, request):
+        from .questions import get_all_topics, search_questions, QUESTION_BANK
+        topic = request.query_params.get('topic', 'All')
+        query = request.query_params.get('q', '')
+        
+        topics = get_all_topics()
+        questions = search_questions(query, topic if topic != 'All' else None)
+        
+        return Response({
+            'topics': ['All'] + topics,
+            'total': len(questions),
+            'questions': questions
+        }, status=status.HTTP_200_OK)
+

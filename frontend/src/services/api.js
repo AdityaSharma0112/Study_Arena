@@ -134,7 +134,24 @@ export const apiService = {
     }
   },
 
+  async getQuestions(topic = 'All', query = '') {
+    try {
+      const params = new URLSearchParams();
+      if (topic && topic !== 'All') params.append('topic', topic);
+      if (query && query.trim()) params.append('q', query.trim());
+
+      const url = `${API_BASE_URL}/api/rooms/questions/?${params.toString()}`;
+      const response = await fetch(url, { headers: DEFAULT_HEADERS });
+      if (!response.ok) return { topics: ['All'], questions: [], total: 0 };
+      return await response.json();
+    } catch (error) {
+      console.error('API Error getQuestions:', error);
+      return { topics: ['All'], questions: [], total: 0 };
+    }
+  },
+
   getWebSocketUrl(roomCode) {
     return `${WS_BASE_URL}/ws/rooms/${roomCode}/`;
   },
 };
+

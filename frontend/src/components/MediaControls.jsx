@@ -9,6 +9,9 @@ import {
   MessageSquare,
   Settings,
   Sparkles,
+  Hand,
+  LayoutGrid,
+  Film,
 } from 'lucide-react';
 
 export default function MediaControls({
@@ -16,15 +19,19 @@ export default function MediaControls({
   isCameraOff,
   isScreenSharing,
   isChatOpen,
+  isHandRaised = false,
+  isSpotlightMode = true,
   unreadCount = 0,
   onToggleMic,
   onToggleCamera,
   onToggleScreenShare,
   onToggleChat,
+  onToggleHandRaise,
+  onToggleLayout,
   onLeaveCall,
   onOpenSettings,
 }) {
-  // Global Keyboard shortcuts: M = Mic, V = Video, S = Screen
+  // Global Keyboard shortcuts: M = Mic, V = Video, S = Screen, H = Hand, L = Layout
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Don't trigger shortcuts if typing inside an input/textarea
@@ -39,12 +46,18 @@ export default function MediaControls({
       } else if (e.key === 's' || e.key === 'S') {
         e.preventDefault();
         onToggleScreenShare();
+      } else if (e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        if (onToggleHandRaise) onToggleHandRaise();
+      } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        if (onToggleLayout) onToggleLayout();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onToggleMic, onToggleCamera, onToggleScreenShare]);
+  }, [onToggleMic, onToggleCamera, onToggleScreenShare, onToggleHandRaise, onToggleLayout]);
 
   return (
     <div style={{
@@ -84,6 +97,36 @@ export default function MediaControls({
         >
           <Monitor size={22} color="#fff" />
         </button>
+
+        {/* Raise Hand Toggle */}
+        {onToggleHandRaise && (
+          <button
+            onClick={onToggleHandRaise}
+            className="btn btn-icon-lg btn-secondary"
+            title={isHandRaised ? 'Lower Hand (Key: H)' : 'Raise Hand (Key: H)'}
+            style={{
+              background: isHandRaised ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' : undefined,
+              boxShadow: isHandRaised ? '0 0 16px rgba(245, 158, 11, 0.5)' : undefined,
+              borderColor: isHandRaised ? '#fbbf24' : undefined,
+            }}
+          >
+            <Hand size={22} color="#fff" />
+          </button>
+        )}
+
+        {/* Layout Switcher Toggle (Spotlight Podium vs Equal Grid) */}
+        {onToggleLayout && (
+          <button
+            onClick={onToggleLayout}
+            className="btn btn-icon-lg btn-secondary"
+            title={isSpotlightMode ? 'Switch to Equal Grid View (Key: L)' : 'Switch to Stage Podium Spotlight (Key: L)'}
+            style={{
+              color: isSpotlightMode ? '#818cf8' : '#94a3b8',
+            }}
+          >
+            {isSpotlightMode ? <Film size={22} /> : <LayoutGrid size={22} />}
+          </button>
+        )}
 
         {/* Separator */}
         <div style={{ width: '1px', height: '30px', background: 'rgba(255, 255, 255, 0.12)', margin: '0 4px' }} />

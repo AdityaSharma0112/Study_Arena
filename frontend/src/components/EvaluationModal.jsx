@@ -43,6 +43,7 @@ export default function EvaluationModal({
     summary = 'Good articulation and technical grasp.',
     matchedKeywords = [],
     isAiGenerated = false,
+    transcript = '',
   } = evaluation;
 
   return (
@@ -148,6 +149,24 @@ export default function EvaluationModal({
             <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>out of 100</span>
           </div>
         </div>
+
+        {/* Spoken Speech Transcript Preview (if available) */}
+        {transcript && (
+          <div style={{
+            padding: '12px 16px',
+            borderRadius: 'var(--radius-md)',
+            background: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            marginBottom: '18px',
+          }}>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', textTransform: 'uppercase', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+              Candidate Speech Analyzed:
+            </span>
+            <p style={{ margin: 0, fontSize: '0.85rem', color: '#e2e8f0', fontStyle: 'italic', lineHeight: 1.4 }}>
+              "{transcript}"
+            </p>
+          </div>
+        )}
 
         {/* Metrics Grid */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '22px' }}>

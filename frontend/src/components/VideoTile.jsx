@@ -15,6 +15,7 @@ export default function VideoTile({
   onPin,
   isPinned = false,
   isPodium = false,
+  isHandRaised = false,
   captions = '',
 }) {
   const videoRef = useRef(null);
@@ -57,7 +58,7 @@ export default function VideoTile({
   return (
     <div
       ref={containerRef}
-      className={`video-tile ${isSpeaking ? 'speaking' : ''} ${isLocal && !isScreenSharing ? 'mirrored' : ''}`}
+      className={`video-tile ${isSpeaking ? 'speaking' : ''} ${isPodium ? 'podium-active' : ''} ${isLocal && !isScreenSharing ? 'mirrored' : ''}`}
       style={{
         border: isPodium
           ? '2.5px solid var(--primary-light)'
@@ -155,6 +156,20 @@ export default function VideoTile({
           }}>
             <Mic size={12} />
             <span>Speaker Turn</span>
+          </div>
+        )}
+
+        {isHandRaised && (
+          <div className="badge badge-warning" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+            color: '#fff',
+            boxShadow: '0 0 14px rgba(245, 158, 11, 0.6)',
+            animation: 'pulse 1.5s infinite',
+          }}>
+            <span>✋ Hand Raised</span>
           </div>
         )}
 

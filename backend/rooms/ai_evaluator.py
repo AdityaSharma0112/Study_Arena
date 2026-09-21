@@ -110,8 +110,8 @@ def run_heuristic_evaluation(question_data, transcript, speaker_name):
 
 
 def call_gemini_evaluator(question_data, transcript, speaker_name, api_key):
-    # Models to try in order of preference
-    models = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+    # Official Google Gemini models on v1beta
+    models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
     
     prompt = f"""
 You are an expert technical interviewer and AI moderator evaluating a candidate's verbal response in a discussion round.
@@ -148,7 +148,11 @@ Evaluate the answer and respond strictly in valid JSON with these exact keys:
             req = urllib.request.Request(url, data=payload, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as response:
                 res_data = json.loads(response.read().decode("utf-8"))
-                text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Clean markdown backticks if present
+                if text.startswith("```"):
+                    lines = text.split("\n")
+                    text = "\n".join(lines[1:-1]) if lines[-1].startswith("```") else "\n".join(lines[1:])
                 parsed = json.loads(text)
                 parsed["isAiGenerated"] = True
                 return parsed

@@ -13,8 +13,10 @@ logger = logging.getLogger(__name__)
 class SignalingConsumer(AsyncJsonWebsocketConsumer):
     # Active peers in rooms: {room_code: {peer_id: {channel_name, username, is_muted, is_camera_off, is_screen_sharing}}}
     room_peers = {}
-    # Active session state per room: {room_code: {session_id, question, speaker_order, turn_index, time_limit, expires_at, evaluations}}
+    # Active session state per room: {room_code: {session_id, question, speaker_order, turn_index, time_limit, expires_at, evaluations, is_paused, remaining_seconds}}
     room_sessions = {}
+    # Raised hands per room: {room_code: [peer_id, ...]}
+    room_hand_raises = {}
 
     async def connect(self):
         self.room_code = self.scope['url_route']['kwargs']['room_code'].upper()
@@ -35,6 +37,11 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
                 p_username = self.room_peers[self.room_code][pid].get('username', self.username)
                 del self.room_peers[self.room_code][pid]
 
+                # Also remove from raised hands if present
+                if self.room_code in self.room_hand_raises and pid in self.room_hand_raises[self.room_code]:
+                    self.room_hand_raises[self.room_code].remove(pid)
+                    await self._broadcast_hand_raises()
+
                 # Broadcast user-left to room
                 await self.channel_layer.group_send(
                     self.room_group_name,
@@ -49,8 +56,10 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
                 )
                 await self.mark_participant_left(self.room_code, pid)
 
-            if not self.room_peers[self.room_code]:
+            if self.room_code in self.room_peers and not self.room_peers[self.room_code]:
                 del self.room_peers[self.room_code]
+            if self.room_code in self.room_hand_raises and not self.room_hand_raises[self.room_code]:
+                del self.room_hand_raises[self.room_code]
 
         await self.channel_layer.group_discard(
             self.room_group_name,
@@ -78,11 +87,23 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
         elif msg_type == 'ping':
             await self.send_json({'type': 'pong'})
 
-        # Arena Discussion Game Loop & AI
+        # Hand Raise Interactions
+        elif msg_type == 'raise-hand':
+            await self.handle_raise_hand(content)
+        elif msg_type == 'lower-hand':
+            await self.handle_lower_hand(content)
+
+        # Arena Discussion Game Loop & Timers & AI
         elif msg_type == 'start-arena-session':
             await self.handle_start_arena_session(content)
         elif msg_type == 'next-turn':
             await self.handle_next_turn(content)
+        elif msg_type == 'extend-time':
+            await self.handle_extend_time(content)
+        elif msg_type == 'pause-timer':
+            await self.handle_pause_timer(content)
+        elif msg_type == 'resume-timer':
+            await self.handle_resume_timer(content)
         elif msg_type == 'submit-transcript':
             await self.handle_submit_transcript(content)
         elif msg_type == 'live-caption':
@@ -153,11 +174,13 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
 
         # 1. Send existing participants back to the newly joined peer
         active_session = self.room_sessions.get(self.room_code)
+        hand_raises = self._get_hand_raises()
         await self.send_json({
             'type': 'existing-participants',
             'participants': existing,
             'myPeerId': self.peer_id,
-            'activeSession': active_session
+            'activeSession': active_session,
+            'handRaises': hand_raises
         })
 
         # 2. Notify other participants in the room that a new peer joined
@@ -183,6 +206,11 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
             del self.room_peers[self.room_code][peer_id]
             if not self.room_peers[self.room_code]:
                 del self.room_peers[self.room_code]
+
+            # Remove from hand raises if present
+            if self.room_code in self.room_hand_raises and peer_id in self.room_hand_raises[self.room_code]:
+                self.room_hand_raises[self.room_code].remove(peer_id)
+                await self._broadcast_hand_raises()
 
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -289,6 +317,46 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
         )
 
     # -------------------------------------------------------------
+    # Hand Raise System
+    # -------------------------------------------------------------
+
+    def _get_hand_raises(self):
+        if self.room_code not in self.room_hand_raises:
+            return []
+        raised_list = []
+        peers_dict = self.room_peers.get(self.room_code, {})
+        for pid in self.room_hand_raises[self.room_code]:
+            uname = peers_dict.get(pid, {}).get('username', 'Participant')
+            raised_list.append({'peerId': pid, 'username': uname})
+        return raised_list
+
+    async def _broadcast_hand_raises(self):
+        hand_raises = self._get_hand_raises()
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'broadcast_event',
+                'message': {
+                    'type': 'hand-raise-updated',
+                    'handRaises': hand_raises
+                }
+            }
+        )
+
+    async def handle_raise_hand(self, content):
+        if self.room_code not in self.room_hand_raises:
+            self.room_hand_raises[self.room_code] = []
+        if self.peer_id and self.peer_id not in self.room_hand_raises[self.room_code]:
+            self.room_hand_raises[self.room_code].append(self.peer_id)
+        await self._broadcast_hand_raises()
+
+    async def handle_lower_hand(self, content):
+        target_peer_id = content.get('peerId') or self.peer_id
+        if self.room_code in self.room_hand_raises and target_peer_id in self.room_hand_raises[self.room_code]:
+            self.room_hand_raises[self.room_code].remove(target_peer_id)
+        await self._broadcast_hand_raises()
+
+    # -------------------------------------------------------------
     # Arena Game Loop & Synchronized Timers & AI Handlers
     # -------------------------------------------------------------
 
@@ -322,6 +390,8 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
             'startedAt': now.isoformat(),
             'expiresAt': expires_at.isoformat(),
             'status': 'ACTIVE',
+            'isPaused': False,
+            'remainingSeconds': time_limit,
             'evaluations': {}
         }
 
@@ -338,6 +408,89 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
                 'message': {
                     'type': 'session-started',
                     'session': session_state
+                }
+            }
+        )
+
+    async def handle_extend_time(self, content):
+        session = self.room_sessions.get(self.room_code)
+        if not session or session.get('status') != 'ACTIVE':
+            return
+        
+        seconds = int(content.get('seconds', 30))
+        if session.get('isPaused'):
+            session['remainingSeconds'] = session.get('remainingSeconds', 0) + seconds
+            new_expires = None
+        else:
+            try:
+                current_exp = timezone.datetime.fromisoformat(session['expiresAt'])
+            except Exception:
+                current_exp = timezone.now()
+            new_exp = current_exp + timedelta(seconds=seconds)
+            session['expiresAt'] = new_exp.isoformat()
+            new_expires = session['expiresAt']
+
+        session['timeLimit'] = session.get('timeLimit', 60) + seconds
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'broadcast_event',
+                'message': {
+                    'type': 'timer-extended',
+                    'seconds': seconds,
+                    'expiresAt': new_expires,
+                    'remainingSeconds': session.get('remainingSeconds'),
+                    'timeLimit': session['timeLimit']
+                }
+            }
+        )
+
+    async def handle_pause_timer(self, content):
+        session = self.room_sessions.get(self.room_code)
+        if not session or session.get('status') != 'ACTIVE' or session.get('isPaused'):
+            return
+
+        now = timezone.now()
+        try:
+            exp = timezone.datetime.fromisoformat(session['expiresAt'])
+            remaining = max(0, int((exp - now).total_seconds()))
+        except Exception:
+            remaining = session.get('timeLimit', 60)
+
+        session['isPaused'] = True
+        session['remainingSeconds'] = remaining
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'broadcast_event',
+                'message': {
+                    'type': 'timer-paused',
+                    'remainingSeconds': remaining
+                }
+            }
+        )
+
+    async def handle_resume_timer(self, content):
+        session = self.room_sessions.get(self.room_code)
+        if not session or session.get('status') != 'ACTIVE' or not session.get('isPaused'):
+            return
+
+        remaining = session.get('remainingSeconds', 30)
+        now = timezone.now()
+        new_expires_at = now + timedelta(seconds=remaining)
+        session['isPaused'] = False
+        session['expiresAt'] = new_expires_at.isoformat()
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'broadcast_event',
+                'message': {
+                    'type': 'timer-resumed',
+                    'expiresAt': session['expiresAt'],
+                    'remainingSeconds': remaining
                 }
             }
         )
@@ -392,14 +545,24 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
         speaker_name = content.get('username', self.username)
 
         session = self.room_sessions.get(self.room_code)
-        if not session:
+        if not session or session.get('status') != 'ACTIVE':
             return
 
+        turn_index = session.get('turnIndex', 0)
+        evaluated_turns = session.setdefault('evaluated_turns', set())
+        turn_key = f"{turn_index}_{speaker_peer_id}"
+
+        if turn_key in evaluated_turns:
+            logger.info(f"[Arena] Duplicate transcript submission ignored for {turn_key}")
+            return
+
+        evaluated_turns.add(turn_key)
         question_data = session.get('question', {})
 
         # Run AI Evaluation
         eval_result = await evaluate_transcript(question_data, transcript, speaker_name)
         eval_result['peerId'] = speaker_peer_id
+        eval_result['transcript'] = transcript
 
         # Save evaluation to memory & DB
         if 'evaluations' not in session:

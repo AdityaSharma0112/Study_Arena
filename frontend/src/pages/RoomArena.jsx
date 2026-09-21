@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Navbar from '../components/Navbar';
 import VideoTile from '../components/VideoTile';
 import MediaControls from '../components/MediaControls';
@@ -6,10 +6,12 @@ import ChatDrawer from '../components/ChatDrawer';
 import StatsModal from '../components/StatsModal';
 import ArenaModeratorBar from '../components/ArenaModeratorBar';
 import EvaluationModal from '../components/EvaluationModal';
+import QuestionPickerModal from '../components/QuestionPickerModal';
 import { useSignaling } from '../hooks/useSignaling';
 import { useWebRTC } from '../hooks/useWebRTC';
 import { useSpeechToText } from '../hooks/useSpeechToText';
 import { useTextToSpeech } from '../hooks/useTextToSpeech';
+import soundEffects from '../services/soundEffects';
 
 export default function RoomArena({
   roomCode,
@@ -21,6 +23,9 @@ export default function RoomArena({
 }) {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [isQuestionPickerOpen, setIsQuestionPickerOpen] = useState(false);
+  const [isSpotlightMode, setIsSpotlightMode] = useState(true);
+  const [isSfxEnabled, setIsSfxEnabled] = useState(true);
   const [messages, setMessages] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [pinnedPeerId, setPinnedPeerId] = useState(null);
@@ -29,6 +34,7 @@ export default function RoomArena({
   const [arenaSession, setArenaSession] = useState(null);
   const [currentEvaluation, setCurrentEvaluation] = useState(null);
   const [liveCaptions, setLiveCaptions] = useState({}); // { [peerId]: text }
+  const [handRaises, setHandRaises] = useState([]); // [{ peerId, username }]
 
   // Initialize signaling hook
   const signaling = useSignaling(roomCode);
@@ -53,6 +59,11 @@ export default function RoomArena({
     toggleScreenShare,
   } = useWebRTC(roomCode, username, signaling);
 
+  // Check if current local user has hand raised
+  const isHandRaised = useMemo(() => {
+    return handRaises.some((hr) => hr.peerId === myPeerId);
+  }, [handRaises, myPeerId]);
+
   // Live captioning callback while speaking
   const handleInterimSpeech = useCallback((text, isFinal) => {
     setLiveCaptions((prev) => ({ ...prev, [myPeerId]: text }));
@@ -66,6 +77,7 @@ export default function RoomArena({
   const speechToText = useSpeechToText(handleInterimSpeech);
 
   const hasJoinedRef = useRef(false);
+  const submittedTurnsMapRef = useRef(new Set());
   const isMyTurn = arenaSession?.status === 'ACTIVE' && arenaSession?.currentSpeakerPeerId === myPeerId;
 
   // Initialize local media and join room once signaling connects
@@ -112,11 +124,23 @@ export default function RoomArena({
     }
   }, [isMyTurn, speechToText]);
 
-  // Handle game loop signaling events
+  // Toggle SFX mute status
+  const handleToggleSfx = useCallback(() => {
+    setIsSfxEnabled((prev) => {
+      const next = !prev;
+      soundEffects.setMuted(!next);
+      return next;
+    });
+  }, []);
+
+  // Handle game loop signaling events & sound triggers
   useEffect(() => {
     const unsubExisting = signaling.on('existing-participants', (data) => {
       if (data.activeSession) {
         setArenaSession(data.activeSession);
+      }
+      if (data.handRaises) {
+        setHandRaises(data.handRaises);
       }
     });
 
@@ -125,6 +149,9 @@ export default function RoomArena({
       setArenaSession(data.session);
       setCurrentEvaluation(null);
       setLiveCaptions({});
+
+      // Play start sound fanfare
+      if (isSfxEnabled) soundEffects.playRoundStart();
 
       // Verbally ask the question using AI voice
       if (data.session?.question?.question) {
@@ -137,6 +164,10 @@ export default function RoomArena({
 
     const unsubTurnChange = signaling.on('turn-changed', (data) => {
       console.log('[Arena] Turn changed:', data);
+
+      // Play turn transition chime
+      if (isSfxEnabled) soundEffects.playTurnChime();
+
       setArenaSession((prev) => {
         if (!prev) return prev;
         const updated = {
@@ -144,6 +175,7 @@ export default function RoomArena({
           turnIndex: data.turnIndex,
           currentSpeakerPeerId: data.currentSpeakerPeerId,
           expiresAt: data.expiresAt,
+          isPaused: false,
         };
         // Verbally introduce turn for next speaker
         if (updated.question?.question) {
@@ -157,9 +189,65 @@ export default function RoomArena({
       setLiveCaptions({});
     });
 
+    const unsubSessionCompleted = signaling.on('session-completed', (data) => {
+      console.log('[Arena] Session completed:', data);
+      if (isSfxEnabled) soundEffects.playCompletionBell();
+      setArenaSession((prev) => prev ? { ...prev, status: 'FINISHED' } : null);
+    });
+
+    const unsubTimerExtended = signaling.on('timer-extended', (data) => {
+      console.log('[Arena] Timer extended by', data.seconds);
+      setArenaSession((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          expiresAt: data.expiresAt || prev.expiresAt,
+          remainingSeconds: data.remainingSeconds ?? prev.remainingSeconds,
+          timeLimit: data.timeLimit || prev.timeLimit,
+        };
+      });
+    });
+
+    const unsubTimerPaused = signaling.on('timer-paused', (data) => {
+      console.log('[Arena] Timer paused at', data.remainingSeconds);
+      setArenaSession((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          isPaused: true,
+          remainingSeconds: data.remainingSeconds,
+        };
+      });
+    });
+
+    const unsubTimerResumed = signaling.on('timer-resumed', (data) => {
+      console.log('[Arena] Timer resumed, expires at', data.expiresAt);
+      setArenaSession((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          isPaused: false,
+          expiresAt: data.expiresAt,
+        };
+      });
+    });
+
+    const unsubHandRaise = signaling.on('hand-raise-updated', (data) => {
+      console.log('[Arena] Hand raises updated:', data.handRaises);
+      setHandRaises((prev) => {
+        const prevCount = prev?.length || 0;
+        const nextList = data.handRaises || [];
+        if (nextList.length > prevCount && isSfxEnabled) {
+          soundEffects.playHandRaise();
+        }
+        return nextList;
+      });
+    });
+
     const unsubEvalResult = signaling.on('evaluation-result', (data) => {
       console.log('[Arena] Evaluation received:', data.evaluation);
       setCurrentEvaluation(data.evaluation);
+      if (isSfxEnabled) soundEffects.playCompletionBell();
       if (data.evaluation) {
         textToSpeech.speakEvaluation(data.evaluation);
       }
@@ -183,11 +271,16 @@ export default function RoomArena({
       if (unsubExisting) unsubExisting();
       if (unsubSessionStart) unsubSessionStart();
       if (unsubTurnChange) unsubTurnChange();
+      if (unsubSessionCompleted) unsubSessionCompleted();
+      if (unsubTimerExtended) unsubTimerExtended();
+      if (unsubTimerPaused) unsubTimerPaused();
+      if (unsubTimerResumed) unsubTimerResumed();
+      if (unsubHandRaise) unsubHandRaise();
       if (unsubEvalResult) unsubEvalResult();
       if (unsubCaptions) unsubCaptions();
       if (unsubSessionEnd) unsubSessionEnd();
     };
-  }, [signaling, myPeerId, username, peers, textToSpeech]);
+  }, [signaling, myPeerId, username, peers, textToSpeech, isSfxEnabled]);
 
   // Handle chat messages and user arrivals
   useEffect(() => {
@@ -233,27 +326,64 @@ export default function RoomArena({
   }, [signaling, isChatOpen, pinnedPeerId]);
 
   // Arena Moderator Game Trigger Callbacks
-  const handleStartArenaSession = useCallback((topic, timeLimit) => {
+  const handleStartArenaSession = useCallback((topic, timeLimit, customQuestion = null) => {
     signaling.sendMessage('start-arena-session', {
       topic,
       timeLimit,
+      customQuestion,
     });
   }, [signaling]);
 
   const handleNextTurn = useCallback(() => {
+    setCurrentEvaluation(null);
     signaling.sendMessage('next-turn', {});
   }, [signaling]);
 
+  const handleExtendTime = useCallback((seconds = 30) => {
+    signaling.sendMessage('extend-time', { seconds });
+  }, [signaling]);
+
+  const handlePauseTimer = useCallback(() => {
+    signaling.sendMessage('pause-timer', {});
+  }, [signaling]);
+
+  const handleResumeTimer = useCallback(() => {
+    signaling.sendMessage('resume-timer', {});
+  }, [signaling]);
+
+  const handleToggleHandRaise = useCallback(() => {
+    if (isHandRaised) {
+      signaling.sendMessage('lower-hand', { peerId: myPeerId });
+    } else {
+      signaling.sendMessage('raise-hand', { peerId: myPeerId });
+    }
+  }, [signaling, myPeerId, isHandRaised]);
+
+  const handleSelectQuestionFromPicker = useCallback((questionData, timeLimit) => {
+    handleStartArenaSession(questionData.topic, timeLimit || questionData.time_limit || 60, questionData);
+  }, [handleStartArenaSession]);
+
   const handleSubmitAnswer = useCallback(() => {
-    const capturedTranscript = speechToText.transcript || 'Spoke on the discussion topic.';
+    const currentTurn = arenaSession?.turnIndex ?? 0;
+    const turnKey = `${currentTurn}_${myPeerId}`;
+
+    if (submittedTurnsMapRef.current.has(turnKey)) {
+      console.log('[Arena] Turn answer already submitted:', turnKey);
+      return;
+    }
+    submittedTurnsMapRef.current.add(turnKey);
+
+    const capturedTranscript = speechToText.transcript ? speechToText.transcript.trim() : '';
     speechToText.stopListening();
 
+    console.log('[Arena] Submitting transcript for evaluation:', turnKey, 'Content length:', capturedTranscript.length);
     signaling.sendMessage('submit-transcript', {
       transcript: capturedTranscript,
       peerId: myPeerId,
       username,
+      turnIndex: currentTurn,
     });
-  }, [speechToText, signaling, myPeerId, username]);
+  }, [speechToText, signaling, myPeerId, username, arenaSession?.turnIndex]);
 
   const handleEndArenaSession = useCallback(() => {
     signaling.sendMessage('end-arena-session', {});
@@ -295,7 +425,8 @@ export default function RoomArena({
   ];
 
   // Determine grid class based on participant count
-  const totalTiles = 1 + Object.keys(peers).length;
+  const remotePeersList = Object.values(peers);
+  const totalTiles = 1 + remotePeersList.length;
   let gridClass = 'grid-1';
   if (totalTiles === 2) gridClass = 'grid-2';
   else if (totalTiles === 3 || totalTiles === 4) gridClass = 'grid-4';
@@ -307,6 +438,64 @@ export default function RoomArena({
     } catch (e) {}
     if (onLeave) onLeave();
   }, [signaling, myPeerId, onLeave]);
+
+  // Determine Spotlight Hero & Gallery members
+  const heroPeerId = useMemo(() => {
+    if (pinnedPeerId) return pinnedPeerId;
+    if (arenaSession?.status === 'ACTIVE' && arenaSession.currentSpeakerPeerId) {
+      return arenaSession.currentSpeakerPeerId;
+    }
+    // If someone is screen sharing, make them hero
+    if (isScreenSharing) return 'local';
+    const sharingRemote = remotePeersList.find((p) => p.isScreenSharing);
+    if (sharingRemote) return sharingRemote.peerId;
+    return 'local';
+  }, [pinnedPeerId, arenaSession, isScreenSharing, remotePeersList]);
+
+  const isLocalHero = heroPeerId === 'local' || heroPeerId === myPeerId;
+
+  // Helper to render local tile
+  const renderLocalTile = (isHero = false) => (
+    <VideoTile
+      key="local-tile"
+      stream={screenStream || localStream}
+      username={username}
+      isLocal={true}
+      isMuted={isMuted}
+      isCameraOff={isCameraOff}
+      isScreenSharing={isScreenSharing}
+      isSpeaking={isLocalSpeaking}
+      audioLevel={audioLevel}
+      onPin={() => handlePinVideo('local')}
+      isPinned={pinnedPeerId === 'local'}
+      isPodium={arenaSession?.status === 'ACTIVE' && arenaSession?.currentSpeakerPeerId === myPeerId}
+      isHandRaised={isHandRaised}
+      captions={liveCaptions[myPeerId] || (isMyTurn ? speechToText.interimTranscript : '')}
+    />
+  );
+
+  // Helper to render remote tile
+  const renderRemoteTile = (peer, isHero = false) => (
+    <VideoTile
+      key={peer.peerId}
+      stream={peer.stream}
+      username={peer.username}
+      isLocal={false}
+      isMuted={peer.isMuted}
+      isCameraOff={peer.isCameraOff}
+      isScreenSharing={peer.isScreenSharing}
+      isSpeaking={peer.isSpeaking}
+      connectionState={peer.connectionState}
+      onPin={() => handlePinVideo(peer.peerId)}
+      isPinned={pinnedPeerId === peer.peerId}
+      isPodium={arenaSession?.status === 'ACTIVE' && arenaSession?.currentSpeakerPeerId === peer.peerId}
+      isHandRaised={handRaises.some((hr) => hr.peerId === peer.peerId)}
+      captions={liveCaptions[peer.peerId] || ''}
+    />
+  );
+
+  const heroRemotePeer = !isLocalHero ? remotePeersList.find((p) => p.peerId === heroPeerId) : null;
+  const galleryRemotePeers = isLocalHero ? remotePeersList : remotePeersList.filter((p) => p.peerId !== heroPeerId);
 
   return (
     <div style={{
@@ -328,16 +517,23 @@ export default function RoomArena({
       <ArenaModeratorBar
         session={arenaSession}
         myPeerId={myPeerId}
-        isHost={true} // In peer arena, all peers can trigger rounds or pass turns
+        isHost={true}
         peers={peers}
         username={username}
+        handRaises={handRaises}
         onStartSession={handleStartArenaSession}
         onNextTurn={handleNextTurn}
         onSubmitAnswer={handleSubmitAnswer}
         onEndSession={handleEndArenaSession}
+        onExtendTime={handleExtendTime}
+        onPauseTimer={handlePauseTimer}
+        onResumeTimer={handleResumeTimer}
+        onOpenQuestionPicker={() => setIsQuestionPickerOpen(true)}
         isSpeaking={textToSpeech.isSpeaking}
         isVoiceEnabled={textToSpeech.isVoiceEnabled}
         onToggleVoice={textToSpeech.toggleVoice}
+        isSfxEnabled={isSfxEnabled}
+        onToggleSfx={handleToggleSfx}
         onRepeatQuestion={() => {
           if (arenaSession?.question?.question) {
             const spkName = arenaSession.currentSpeakerPeerId === myPeerId
@@ -348,7 +544,7 @@ export default function RoomArena({
         }}
       />
 
-      {/* Video Grid Arena Stage */}
+      {/* Video Arena Stage (Spotlight Stage vs Equal Grid) */}
       <main style={{
         flex: 1,
         display: 'flex',
@@ -358,42 +554,27 @@ export default function RoomArena({
         position: 'relative',
         paddingBottom: '90px', // Space for bottom controls
       }}>
-        <div className={`video-grid-container ${gridClass}`}>
-          {/* Local User Video Tile */}
-          <VideoTile
-            stream={screenStream || localStream}
-            username={username}
-            isLocal={true}
-            isMuted={isMuted}
-            isCameraOff={isCameraOff}
-            isScreenSharing={isScreenSharing}
-            isSpeaking={isLocalSpeaking}
-            audioLevel={audioLevel}
-            onPin={() => handlePinVideo('local')}
-            isPinned={pinnedPeerId === 'local'}
-            isPodium={arenaSession?.status === 'ACTIVE' && arenaSession?.currentSpeakerPeerId === myPeerId}
-            captions={liveCaptions[myPeerId] || (isMyTurn ? speechToText.interimTranscript : '')}
-          />
+        {isSpotlightMode && totalTiles > 1 ? (
+          /* Spotlight Stage Layout (Center Hero Stage + Filmstrip Gallery) */
+          <div className="spotlight-stage-layout">
+            {/* Main Stage Spotlight Hero */}
+            <div className="spotlight-main-stage">
+              {isLocalHero ? renderLocalTile(true) : (heroRemotePeer ? renderRemoteTile(heroRemotePeer, true) : renderLocalTile(true))}
+            </div>
 
-          {/* Remote Peer Video Tiles */}
-          {Object.values(peers).map((peer) => (
-            <VideoTile
-              key={peer.peerId}
-              stream={peer.stream}
-              username={peer.username}
-              isLocal={false}
-              isMuted={peer.isMuted}
-              isCameraOff={peer.isCameraOff}
-              isScreenSharing={peer.isScreenSharing}
-              isSpeaking={peer.isSpeaking}
-              connectionState={peer.connectionState}
-              onPin={() => handlePinVideo(peer.peerId)}
-              isPinned={pinnedPeerId === peer.peerId}
-              isPodium={arenaSession?.status === 'ACTIVE' && arenaSession?.currentSpeakerPeerId === peer.peerId}
-              captions={liveCaptions[peer.peerId] || ''}
-            />
-          ))}
-        </div>
+            {/* Gallery Filmstrip of Other Peers */}
+            <div className="spotlight-filmstrip">
+              {!isLocalHero && renderLocalTile(false)}
+              {galleryRemotePeers.map((peer) => renderRemoteTile(peer, false))}
+            </div>
+          </div>
+        ) : (
+          /* Equal Grid View */
+          <div className={`video-grid-container ${gridClass}`}>
+            {renderLocalTile(false)}
+            {remotePeersList.map((peer) => renderRemoteTile(peer, false))}
+          </div>
+        )}
       </main>
 
       {/* Floating Bottom Media Controls */}
@@ -402,11 +583,15 @@ export default function RoomArena({
         isCameraOff={isCameraOff}
         isScreenSharing={isScreenSharing}
         isChatOpen={isChatOpen}
+        isHandRaised={isHandRaised}
+        isSpotlightMode={isSpotlightMode}
         unreadCount={unreadCount}
         onToggleMic={toggleMic}
         onToggleCamera={toggleCamera}
         onToggleScreenShare={toggleScreenShare}
         onToggleChat={handleToggleChat}
+        onToggleHandRaise={handleToggleHandRaise}
+        onToggleLayout={() => setIsSpotlightMode((prev) => !prev)}
         onLeaveCall={handleLeaveCall}
         onOpenSettings={() => setIsStatsOpen(true)}
       />
@@ -428,6 +613,14 @@ export default function RoomArena({
         peers={peers}
         isConnected={signaling.isConnected}
         roomCode={roomCode}
+      />
+
+      {/* Question Picker & Custom Question Modal */}
+      <QuestionPickerModal
+        isOpen={isQuestionPickerOpen}
+        onClose={() => setIsQuestionPickerOpen(false)}
+        onSelectQuestion={handleSelectQuestionFromPicker}
+        currentTopic={arenaSession?.topic || 'System Design'}
       />
 
       {/* AI Round Evaluation Scorecard Modal */}

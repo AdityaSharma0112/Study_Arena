@@ -94,8 +94,13 @@ export function useWebRTC(roomCode, username, signaling) {
           height: { ideal: 720 },
           facingMode: 'user',
         } : false,
-        audio: audioEnabled,
+        audio: true, // Always request audio permission & track so it can be unmuted seamlessly
       });
+
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = Boolean(audioEnabled);
+      }
 
       console.log('[WebRTC] Acquired local stream:', stream.id, 'Tracks:', stream.getTracks().map(t => `${t.kind}:${t.enabled}`));
       localStreamRef.current = stream;
@@ -103,10 +108,9 @@ export function useWebRTC(roomCode, username, signaling) {
 
       setIsCameraOff(!videoEnabled);
       setIsMuted(!audioEnabled);
+      isMutedRef.current = !audioEnabled;
 
-      if (audioEnabled) {
-        setupAudioMonitoring(stream);
-      }
+      setupAudioMonitoring(stream);
 
       // If any existing peer connections were created before stream acquisition, attach tracks now
       Object.values(peerConnectionsRef.current).forEach((pc) => {
@@ -426,20 +430,63 @@ export function useWebRTC(roomCode, username, signaling) {
   ]);
 
   // Toggle Microphone
-  const toggleMic = useCallback(() => {
+  const toggleMic = useCallback(async () => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         const newMuted = !audioTrack.enabled;
         setIsMuted(newMuted);
+        isMutedRef.current = newMuted;
 
         signaling.sendMessage('media-state', {
           isMuted: newMuted,
         });
+        return;
       }
     }
-  }, [signaling]);
+
+    // Dynamic recovery: If no audio track is attached to localStream, acquire one now
+    try {
+      console.log('[WebRTC] Requesting new audio track on unmute...');
+      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const newAudioTrack = audioStream.getAudioTracks()[0];
+      if (newAudioTrack) {
+        if (!localStreamRef.current) {
+          localStreamRef.current = new MediaStream();
+        }
+        localStreamRef.current.addTrack(newAudioTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+
+        newAudioTrack.enabled = true;
+        setIsMuted(false);
+        isMutedRef.current = false;
+
+        setupAudioMonitoring(localStreamRef.current);
+
+        // Attach audio track to all active peer connections
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          const senders = pc.getSenders();
+          const audioSender = senders.find((s) => s.track?.kind === 'audio');
+          if (audioSender) {
+            audioSender.replaceTrack(newAudioTrack);
+          } else {
+            try {
+              pc.addTrack(newAudioTrack, localStreamRef.current);
+            } catch (e) {
+              console.warn('[WebRTC] addTrack audio notice:', e);
+            }
+          }
+        });
+
+        signaling.sendMessage('media-state', {
+          isMuted: false,
+        });
+      }
+    } catch (err) {
+      console.error('[WebRTC] Failed to acquire microphone on unmute:', err);
+    }
+  }, [signaling, setupAudioMonitoring]);
 
   // Toggle Camera (Shuts off hardware camera sensor and turns off laptop LED)
   const toggleCamera = useCallback(async () => {

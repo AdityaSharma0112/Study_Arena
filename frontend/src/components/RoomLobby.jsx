@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Video, VideoOff, Play, Shield, ArrowLeft, Volume2 } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Play, Shield, ArrowLeft, Volume2, Lock, LogIn, UserCheck } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function RoomLobby({
   roomCode,
@@ -8,7 +9,8 @@ export default function RoomLobby({
   onJoin,
   onBack,
 }) {
-  const [username, setUsername] = useState(initialUsername || `Guest_${Math.floor(1000 + Math.random() * 9000)}`);
+  const { user, isAuthenticated, openLoginModal } = useAuth();
+  const [username, setUsername] = useState(initialUsername || (user && user.username) || '');
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [audioMeter, setAudioMeter] = useState(0);
@@ -19,8 +21,17 @@ export default function RoomLobby({
   const animFrameRef = useRef(null);
   const audioCtxRef = useRef(null);
 
+  // Sync username with user object when available
+  useEffect(() => {
+    if (user && user.username) {
+      setUsername(user.username);
+    }
+  }, [user]);
+
   // Setup preview stream
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     let isCancelled = false;
 
     async function startPreview() {
@@ -84,7 +95,7 @@ export default function RoomLobby({
         streamRef.current.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [videoEnabled, audioEnabled]);
+  }, [videoEnabled, audioEnabled, isAuthenticated]);
 
   const handleToggleVideo = () => {
     setVideoEnabled((prev) => !prev);
@@ -96,7 +107,12 @@ export default function RoomLobby({
 
   const handleJoinSubmit = (e) => {
     e.preventDefault();
-    if (!username.trim()) return;
+    if (!isAuthenticated) {
+      openLoginModal();
+      return;
+    }
+
+    const finalName = username.trim() || (user && user.username) || 'Participant';
 
     // Clean up lobby stream so useWebRTC acquires clean stream
     if (streamRef.current) {
@@ -104,11 +120,62 @@ export default function RoomLobby({
     }
 
     onJoin({
-      username: username.trim(),
+      username: finalName,
       videoEnabled,
       audioEnabled,
     });
   };
+
+  // If unauthenticated, render Sign-In Barrier
+  if (!isAuthenticated) {
+    return (
+      <div style={{
+        maxWidth: '540px',
+        margin: '60px auto',
+        padding: '0 20px',
+        width: '100%',
+        textAlign: 'center',
+      }}>
+        <div className="glass-panel-elevated" style={{ padding: '40px 32px' }}>
+          <div style={{
+            width: '56px',
+            height: '56px',
+            borderRadius: '16px',
+            background: 'linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: '20px',
+            boxShadow: '0 0 20px var(--primary-glow)',
+          }}>
+            <Lock size={26} color="#fff" />
+          </div>
+          <h2 style={{ fontSize: '1.6rem', color: '#fff', marginBottom: '8px' }}>
+            Authentication Required
+          </h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginBottom: '24px', lineHeight: 1.6 }}>
+            You must be signed in to step onto the stage of Room <span style={{ fontFamily: 'var(--font-mono)', color: '#a5b4fc', fontWeight: 700 }}>{roomCode}</span>.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <button
+              onClick={openLoginModal}
+              className="btn btn-primary"
+              style={{ width: '100%', padding: '14px', fontSize: '1rem', gap: '8px', justifyContent: 'center' }}
+            >
+              <LogIn size={18} /> Sign In to Enter Arena
+            </button>
+            <button
+              onClick={onBack}
+              className="btn btn-secondary"
+              style={{ width: '100%', padding: '12px', justifyContent: 'center' }}
+            >
+              <ArrowLeft size={16} /> Back to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -243,17 +310,25 @@ export default function RoomLobby({
           <form onSubmit={handleJoinSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px' }}>
-                Your Display Name
+                Your Authenticated Identity
               </label>
-              <input
-                type="text"
-                required
-                className="input-glass"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Enter your name..."
-                maxLength={30}
-              />
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                background: 'rgba(99, 102, 241, 0.12)',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                color: '#fff',
+                fontWeight: 600,
+              }}>
+                <UserCheck size={18} color="#34d399" />
+                <span>{user?.username || username}</span>
+                <span className="badge badge-success" style={{ marginLeft: 'auto', fontSize: '0.7rem' }}>
+                  Verified
+                </span>
+              </div>
             </div>
 
             <div style={{

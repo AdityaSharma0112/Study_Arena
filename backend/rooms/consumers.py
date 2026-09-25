@@ -633,12 +633,15 @@ class SignalingConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def record_participant_join(self, room_code, peer_id, username):
         try:
+            from django.contrib.auth.models import User
+            user = User.objects.filter(username=username).first()
             room = Room.objects.get(code=room_code)
             RoomParticipant.objects.update_or_create(
                 room=room,
                 peer_id=peer_id,
                 defaults={
                     'username': username,
+                    'user': user,
                     'is_active': True,
                     'left_at': None
                 }

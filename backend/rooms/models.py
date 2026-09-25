@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 import uuid
 
 def generate_room_code():
@@ -9,6 +10,7 @@ class Room(models.Model):
     code = models.CharField(max_length=16, unique=True, default=generate_room_code, db_index=True)
     title = models.CharField(max_length=255, default="Arena Discussion Room")
     host_name = models.CharField(max_length=100, default="Host")
+    creator = models.ForeignKey(User, related_name='created_rooms', on_delete=models.SET_NULL, null=True, blank=True)
     max_participants = models.PositiveIntegerField(default=6)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -25,6 +27,7 @@ class Room(models.Model):
 class RoomParticipant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     room = models.ForeignKey(Room, related_name='participants', on_delete=models.CASCADE)
+    user = models.ForeignKey(User, related_name='room_participations', on_delete=models.SET_NULL, null=True, blank=True)
     peer_id = models.CharField(max_length=100, db_index=True)
     username = models.CharField(max_length=100)
     is_active = models.BooleanField(default=True)

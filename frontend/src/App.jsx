@@ -4,8 +4,10 @@ import Home from './pages/Home';
 import RoomLobby from './components/RoomLobby';
 import RoomArena from './pages/RoomArena';
 import CreateRoomModal from './components/CreateRoomModal';
+import LoginModal from './components/LoginModal';
+import { AuthProvider } from './context/AuthContext';
 
-export default function App() {
+function MainApp() {
   const [currentView, setCurrentView] = useState('home'); // 'home' | 'lobby' | 'arena'
   const [roomCode, setRoomCode] = useState('');
   const [roomTitle, setRoomTitle] = useState('');
@@ -97,6 +99,17 @@ export default function App() {
         onClose={() => setIsCreateModalOpen(false)}
         onRoomCreated={handleRoomCreated}
       />
+
+      {/* Sign-In Modal */}
+      <LoginModal />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
   );
 }

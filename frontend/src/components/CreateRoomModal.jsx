@@ -1,31 +1,47 @@
-import React, { useState } from 'react';
-import { X, Video, Users, Sparkles, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Video, Users, Sparkles, Loader2, UserCheck, Lock } from 'lucide-react';
 import { apiService } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }) {
+  const { user, isAuthenticated, openLoginModal } = useAuth();
   const [title, setTitle] = useState('');
   const [hostName, setHostName] = useState('');
   const [maxParticipants, setMaxParticipants] = useState(4);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    if (isOpen && user && user.username) {
+      setHostName(user.username);
+    }
+  }, [isOpen, user]);
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!isAuthenticated) {
+      onClose();
+      openLoginModal();
+      return;
+    }
+
     setLoading(true);
     setError('');
+
+    const effectiveHost = (user && user.username) || hostName.trim() || 'Host';
 
     try {
       const room = await apiService.createRoom(
         title.trim() || 'Arena Discussion Room',
-        hostName.trim() || 'Host',
+        effectiveHost,
         Number(maxParticipants) || 4
       );
-      onRoomCreated(room, hostName.trim() || 'Host');
+      onRoomCreated(room, effectiveHost);
     } catch (err) {
       console.error('Room creation error:', err);
-      setError(err.message || 'Failed to create room on server. Is Django backend running?');
+      setError(err.message || 'Failed to create room on server.');
     } finally {
       setLoading(false);
     }
@@ -100,17 +116,42 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }) {
 
           <div>
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Your Host Name
+              Host Identity
             </label>
-            <input
-              type="text"
-              required
-              className="input-glass"
-              placeholder="e.g. Alex"
-              value={hostName}
-              onChange={(e) => setHostName(e.target.value)}
-              maxLength={30}
-            />
+            {isAuthenticated ? (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                background: 'rgba(99, 102, 241, 0.12)',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                color: '#fff',
+                fontWeight: 600,
+              }}>
+                <UserCheck size={18} color="#34d399" />
+                <span>{user?.username}</span>
+                <span className="badge badge-success" style={{ marginLeft: 'auto', fontSize: '0.7rem' }}>
+                  Authenticated
+                </span>
+              </div>
+            ) : (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#fca5a5',
+                fontSize: '0.85rem',
+              }}>
+                <Lock size={16} />
+                <span>Sign in required to create an arena</span>
+              </div>
+            )}
           </div>
 
           <div>
@@ -148,8 +189,10 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }) {
                 <>
                   <Loader2 size={16} className="animate-spin" /> Creating...
                 </>
-              ) : (
+              ) : isAuthenticated ? (
                 'Create Room'
+              ) : (
+                'Sign In to Create'
               )}
             </button>
           </div>
